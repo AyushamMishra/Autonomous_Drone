@@ -65,7 +65,7 @@ class ParticleFilter:
         # Slope error
             slope_error = measured_slope - map_slope
 
-        # Gaussian likelihood
+        # Gaussian Slope likelihood
             self.weights[i] = np.exp(
             -0.5 * (slope_error ** 2) / (sigma_slope ** 2)
         ) + 1e-6
@@ -73,7 +73,7 @@ class ParticleFilter:
         # Update stored elevation
             self.particles[i, 3] = current_z
 
-    # ---- NORMALIZE ONCE ----
+    # NORMALIZE ONCe
         weight_sum = np.sum(self.weights)
 
         if weight_sum == 0 or np.isnan(weight_sum):
