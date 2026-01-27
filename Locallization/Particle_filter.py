@@ -13,15 +13,19 @@ class ParticleFilter:
         self.motion_model = MotionModel(sigma_v=0.5, sigma_yaw=0.01)
         self.num_particles = num_particles
 
-        # Particle state: [x, y, yaw, last_elevation]
-        self.particles = np.zeros((num_particles, 4))
+        # Particle state: [x, y, yaw, last_elevation,last_dzdx,last_dzdy,last_x,last_y,prev_z]
+        self.particles = np.zeros((num_particles, 9))
 
         # Initialize position + yaw
         self.particles[:, 0] = start_x + np.random.uniform(-spread, spread, num_particles)
         self.particles[:, 1] = start_y + np.random.uniform(-spread, spread, num_particles)
         yaw_spread = np.deg2rad(10)
         self.particles[:, 2] = start_yaw + np.random.uniform(-yaw_spread, yaw_spread, num_particles)
-
+        dz_dx, dz_dy = self.map_server.get_gradient(start_x, start_y)
+        self.particles[:, 4] = dz_dx
+        self.particles[:, 5] = dz_dy
+        self.particles[:, 6] = self.particles[:, 0]
+        self.particles[:, 7] = self.particles[:, 1]
 
         # Initialize last_elevation from DEM
         for i in range(num_particles):
@@ -40,6 +44,12 @@ class ParticleFilter:
 
     # Predict
     def predict(self,control_inputs,dt):
+
+        # Store previous pose BEFORE motion
+        self.particles[:, 6] = self.particles[:, 0]
+        self.particles[:, 7] = self.particles[:, 1]
+        
+        
         self.particles[:, :3] = self.motion_model.propagate(
             self.particles[:, :3],
             control_inputs,
@@ -65,7 +75,7 @@ class ParticleFilter:
             yaw = self.particles[i, 2]
 
             # expected forward motion
-            ds = 1.0  # meters (can be v*dt, but keep small)
+            ds = 0.5*min(self.map_server.res_x, self.map_server.res_y)  # meters (can be v*dt, but keep small) (stabilizes slope)
             dx = ds * np.cos(yaw)
             dy = ds * np.sin(yaw)
 
@@ -99,14 +109,58 @@ class ParticleFilter:
             heading_likelihood = np.exp(
                 -0.5 * (heading_error ** 2) / (sigma_heading ** 2)
             )   
+        # Gradient  Error and Likelihood
+             
+             # -------- Cross-track displacement likelihood --------
 
+            x_last = self.particles[i, 6]
+            y_last = self.particles[i, 7]
+
+            dxp = x - x_last
+            dyp = y - y_last
+
+            #  Unit normal to heading
+            nx = -np.sin(yaw)
+            ny =  np.cos(yaw)
+
+            cross_disp = dxp * nx + dyp * ny
+            sigma_cross = 10.0  # meters (≈ vehicle lateral drift tolerance)
+            L_cross = np.exp(
+                -0.5 * (cross_disp ** 2) / (sigma_cross ** 2)
+            )
+            
+            dz_dx, dz_dy = self.map_server.get_gradient(x, y)
+            grad_mag = np.hypot(dz_dx, dz_dy)
+
+            if np.isnan(grad_mag) or grad_mag < 0.01:
+            # Flat or unreliable terrain → do NOT constrain
+                grad_likelihood = 1.0
+            else:
+                grad_dir = np.arctan2(dz_dy, dz_dx)
+
+            # Expected direction: downhill ≈ opposite velocity
+            expected_dir = wrap_angle(yaw + np.pi)
+
+            grad_error = wrap_angle(grad_dir - expected_dir)
+
+            sigma_grad_dir = np.deg2rad(40)
+            grad_likelihood = np.exp(
+                -0.5 * (grad_error ** 2) / (sigma_grad_dir ** 2)
+            )
 
         # Combined Likelihood
-            self.weights[i] = (slope_likelihood * Altitude_likelihood * heading_likelihood) + 1e-12
+            self.weights[i] = (slope_likelihood * Altitude_likelihood * heading_likelihood * (grad_likelihood**0.5)*(L_cross**0.5)) + 1e-12
 
         # Update stored elevation
             self.particles[i, 3] = current_z
 
+        # Update stored gradients
+            self.particles[i, 4] = dz_dx
+            self.particles[i, 5] = dz_dy
+
+        
+
+        
     # NORMALIZE ONCe
         weight_sum = np.sum(self.weights)
 
@@ -124,6 +178,10 @@ class ParticleFilter:
     def resample(self):
         if np.any(np.isnan(self.weights)):
             raise RuntimeError("Nan weights detected during resampling.")
+        
+        N_eff=1.0/np.sum(self.weights**2)
+        if N_eff>0.5*self.num_particles:
+            return   # No resampling needed
         
 
         indices = np.random.choice(
