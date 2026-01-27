@@ -25,8 +25,8 @@ class Map_Server:
             )
 
         ## MAP Resolution(meters per pixel)
-        self.res_x=abs(self.transform.a)
-        self.res_y=abs(self.transform.e)
+        self.res_x=abs(self.transform.a)    # Resolution in x direction (Pixel width)
+        self.res_y=abs(self.transform.e)    # Resolution in y direction (Pixel height)
         print(f"Bounds: {self.bounds}")
         print(f"Resolution: {self.res_x} m/pixel (x), {self.res_y} m/pixel (y)")
      
@@ -54,7 +54,11 @@ class Map_Server:
             return np.nan # no data value
         return float(z)
     
-    def get_slope(self, x, y, yaw, step=1.0):
+    def get_slope(self, x, y, yaw, step=None):
+
+        if step is None:
+            step = max(self.res_x, self.res_y)
+        
           
         ##   Returns terrain slope (dz/ds) along heading direction
     
@@ -69,8 +73,32 @@ class Map_Server:
             return np.nan
 
         return (z2 - z1) / step
-
     
+    def get_gradient(self,x,y):
+        # Returns terrain gradient (dz/dx, dz/dy) at (x,y)
+
+        # DEM resolution
+        dx = abs(self.res_x)
+        dy = abs(self.res_y)
+
+       # Central difference approximation
+        z_x1 = self.get_elevation(x + dx, y)
+        z_x2 = self.get_elevation(x - dx, y)
+        z_y1 = self.get_elevation(x, y + dy)
+        z_y2 = self.get_elevation(x, y - dy)
+
+        if(
+            np.isnan(z_x1) or np.isnan(z_x2) or
+            np.isnan(z_y1) or np.isnan(z_y2)
+
+        ):
+            return (np.nan,np.nan)
+        
+        dz_dx=(z_x1-z_x2)/(2*dx)
+        dz_dy=(z_y1-z_y2)/(2*dy)
+
+        return (dz_dx,dz_dy)
+
     def close(self):
         self.dataset.close()
 
@@ -116,6 +144,9 @@ if __name__ == "__main__":
     for step in range(10):
         dx, dy, dyaw = 1.0, 0.2, 0.01  # meters, meters, radians
         x, y, yaw = estimator.update_from_vio(dx, dy, dyaw)
+
+        dz_dx, dz_dy = map_server.get_gradient(x, y)
+        print(f"grad_x={dz_dx:.4f}, grad_y={dz_dy:.4f}")
 
         z = map_server.get_elevation(x, y)
         slope=map_server.get_slope(x,y,yaw,step=1.0)
