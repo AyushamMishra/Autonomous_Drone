@@ -124,7 +124,7 @@ class ParticleFilter:
             ny =  np.cos(yaw)
 
             cross_disp = dxp * nx + dyp * ny
-            sigma_cross = 10.0  # meters (≈ vehicle lateral drift tolerance)
+            sigma_cross = 10.0  # meters ( lateral drift tolerance)
             L_cross = np.exp(
                 -0.5 * (cross_disp ** 2) / (sigma_cross ** 2)
             )
@@ -133,12 +133,12 @@ class ParticleFilter:
             grad_mag = np.hypot(dz_dx, dz_dy)
 
             if np.isnan(grad_mag) or grad_mag < 0.01:
-            # Flat or unreliable terrain → do NOT constrain
+            # Flat or unreliable terrain : do NOT constrain
                 grad_likelihood = 1.0
             else:
                 grad_dir = np.arctan2(dz_dy, dz_dx)
 
-            # Expected direction: downhill ≈ opposite velocity
+            # Expected direction: downhill /opposite velocity
             expected_dir = wrap_angle(yaw + np.pi)
 
             grad_error = wrap_angle(grad_dir - expected_dir)

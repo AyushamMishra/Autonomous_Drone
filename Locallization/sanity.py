@@ -44,7 +44,7 @@ dt=1.0
 
 def main():
 
-    print("\n--- PF SANITY CHECK (SLOPE + ALT + Heading LIKELIHOOD) START ---\n")
+    print("\n--- PF SANITY CHECK (SLOPE + ALT + Heading + Gradient LIKELIHOOD) START ---\n")
 
     # Load DEM
     map_server = Map_Server(DEM_reprojection.output_dem)
