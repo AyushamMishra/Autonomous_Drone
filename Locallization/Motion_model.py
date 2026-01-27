@@ -14,14 +14,6 @@ dt = time interval between steps
 
 """
 
-
-"""
-Motion Model
-State      : [x, y, yaw]
-Control    : [v, omega]
-Units      : meters, radians, seconds
-"""
-
 import numpy as np
 
 class MotionModel:
