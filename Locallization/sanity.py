@@ -1,5 +1,8 @@
 from py_compile import main
 import rasterio
+import numpy as np
+#   np.random.seed(42)  (only for debugging use cases)
+
 
 
 ## Sanity test for DEM Projection
@@ -27,7 +30,7 @@ SPREAD = 30.0              # meters
 SIGMA_MOVE = 0.5           # meters
 SIGMA_SLOPE = 0.3          # elevation-delta noise (meters)
 SIGMA_ALT = 3.0            # altitude noise (meters), barometric altitude
-SIGMA_HEADING=np.deg2rad(2.0)  # heading noise (radians)
+SIGMA_HEADING=np.deg2rad(1.0)  # heading noise (radians)
 
 
 MOTION_X = 1.0             # meters/step
