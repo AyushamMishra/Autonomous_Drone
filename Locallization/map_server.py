@@ -98,6 +98,30 @@ class Map_Server:
         dz_dy=(z_y1-z_y2)/(2*dy)
 
         return (dz_dx,dz_dy)
+    
+
+    def get_aligned_patch(self,x,y,yaw,length,spacing):
+        """ Samples DEM elevationsalong the direction of motion and
+            returns 1D array of elevations. """
+        
+        num_samples=int(length/spacing)
+        patch=np.zeros(num_samples)
+
+        for i in range (num_samples):
+
+            s=-i*spacing          # Backward sampling along motion direction
+
+            xi=x+s*np.cos(yaw)
+            yi=y+s*np.sin(yaw)
+
+            zi=self.get_elevation(xi,yi)
+            if zi is None or np.isnan(zi):
+                return None      # Invalid patch
+            patch[i]=zi
+
+        return patch
+         
+    
 
     def close(self):
         self.dataset.close()
