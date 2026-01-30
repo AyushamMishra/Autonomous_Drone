@@ -12,6 +12,8 @@ class ParticleFilter:
         self.map_server = map_server
         self.motion_model = MotionModel(sigma_v=0.5, sigma_yaw=0.01)
         self.num_particles = num_particles
+        self.altitude_history_len = 12                                    # Number of past elevations to store typically 6-12
+        self.patch_spacing = min(map_server.res_x, map_server.res_y)      # Spacing between altitude history samples
 
         # Particle state: [x, y, yaw, last_elevation,last_dzdx,last_dzdy,last_x,last_y,prev_z]
         self.particles = np.zeros((num_particles, 9))
@@ -42,6 +44,9 @@ class ParticleFilter:
             else:
                 self.particles[i, 3] = z
 
+        # Initializing altitude history (Rolling buffer)
+        self.altitude_history=np.full((self.num_particles,self.altitude_history_len),np.nan)
+
         # Uniform weights
         self.weights = np.ones(num_particles) / num_particles
 
@@ -53,9 +58,13 @@ class ParticleFilter:
         self.particles[:, 7] = self.particles[:, 1]   # y_last
         # Store previous elevation before motion
         self.particles[:, 8] = self.particles[:, 3]   # prev_z
+        # Storing shift history before motion
+        self.altitude_history[:, :-1] = self.altitude_history[:, 1:]
+        self.altitude_history[:, -1] = self.particles[:, 3]  # last elevation
+
 
         
-        
+        # Motion propagation
         self.particles[:, :3] = self.motion_model.propagate(
             self.particles[:, :3],
             control_inputs,
@@ -66,7 +75,7 @@ class ParticleFilter:
     # UPDATE
 
     def update_weights(self, measured_slope, measured_altitude, measured_yaw, sigma_altitude, sigma_slope, sigma_heading):
-        terrain_flatness_threshold = 0.02  # Flat if grad_mag < 2%
+        terrain_flatness_threshold = 0.05  # Flat if grad_mag < 2%
         eps=1e-12
     
         for i in range(self.num_particles):
@@ -85,11 +94,11 @@ class ParticleFilter:
         #             CORE LIKELIHOODS (Always active) 
         #    Altitude (primary)
             altitude_error = measured_altitude - current_z    
-            altitude_likelihood = np.exp(-0.5 * (altitude_error)**2 / sigma_altitude**2)
+            altitude_likelihood = np.exp(-0.5 * altitude_error**2 / sigma_altitude**2)**0.4
         
         #    Heading  
             heading_error = wrap_angle(measured_yaw - yaw)
-            heading_likelihood = np.exp(-0.5 * (heading_error)**2 / sigma_heading**2)
+            heading_likelihood = np.exp(-0.5 * heading_error**2 / sigma_heading**2)
         
         #              CONDITIONAL LIKELIHOODS (Terrain-dependent)(only works when terrain is not flat and has features )
             base_likelihood = altitude_likelihood * heading_likelihood
@@ -143,12 +152,56 @@ class ParticleFilter:
             L_cross = np.exp(-0.5 * (cross_disp)**2 / sigma_cross**2)
             base_likelihood *= L_cross ** 0.8  # Very gentle weight
 
-            self.weights[i] = min(base_likelihood, 1.0) + eps
+
+            # Shape based Terrain Likelihood 
+            L_patch = 1.0
+
+            if motion_norm >= 0.5:        
+                # Motion Gating , only apply if significant motion has occurred
+                obs_patch = self.altitude_history[i]
+                valid_frac = np.mean(~np.isnan(obs_patch))
+
+                if valid_frac > 0.7:
+                    patch_length = self.altitude_history_len * self.patch_spacing
+                    yaw_offsets = np.deg2rad([-3, 0, 3])                 # Yaw aligned DEM Patches
+                    best_L_patch = 1.0                                   # Best likelihood 
+
+                    for dyaw in yaw_offsets:
+                        map_patch = self.map_server.get_aligned_patch(
+                                            x, y, yaw + dyaw,length=patch_length,
+                                             spacing=self.patch_spacing
+                                        )
+
+                        if map_patch is None:
+                            continue
+                        # Remove means , shape only comparison
+                        map_patch = map_patch - np.mean(map_patch)
+                        obs_z = obs_patch - np.nanmean(obs_patch)
+                        # Terrain observability gating
+                        terrain_var = np.var(map_patch)
+                        if terrain_var < 0.5:
+                            continue
+
+                        err = obs_z - map_patch
+                        mse = np.nanmean(err ** 2)
+
+                        sigma_patch = 2.5             # meters , shape noise level
+                        L = np.exp(-0.5 * mse / sigma_patch ** 2)
+                        best_L_patch = max(best_L_patch, L)
+
+                    L_patch = best_L_patch
+
+            base_likelihood *= L_patch ** 1.6
+
+            
 
         # Update aux
             self.particles[i, 3] = current_z
             self.particles[i, 4] = dz_dx
             self.particles[i, 5] = dz_dy
+        # Final weight assignment
+        self.weights[i] = base_likelihood + eps
+
     
     # Normalize
         weight_sum = np.sum(self.weights)
