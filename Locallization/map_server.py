@@ -120,6 +120,34 @@ class Map_Server:
             patch[i]=zi
 
         return patch
+    
+    def get_2D_terrain_patch(self,x,y,length,spacing,half_width_cell=2):
+        """ Samples a 2D patch centered at (x,y)
+            returns 2D array of elevations which are yaw aligned 
+            Shape: [N_along,N_cross]  """
+        
+        N_along=int(length/spacing)
+        N_cross=2*half_width_cell + 1
+
+        patch_2D=np.full((N_along,N_cross),np.nan)    # Definindg 2D patch with NaNs
+
+        cos_y = np.cos(yaw)
+        sin_y = np.sin(yaw)
+
+        for i in range(N_along):
+            s = -i * spacing   # backward in time (match altitude history)
+
+            cx = x + s * cos_y
+            cy = y + s * sin_y
+
+            for j, n in enumerate(range(-half_width_cell, half_width_cell + 1)):
+                nx = cx + n * spacing * (-sin_y)
+                ny = cy + n * spacing * ( cos_y)
+
+                z = self.get_elevation(nx, ny)
+                patch_2D[i, j] = z
+
+        return patch_2D
          
     
 
