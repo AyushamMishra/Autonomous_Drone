@@ -1,7 +1,7 @@
 from py_compile import main
 import rasterio
 import numpy as np
-#   np.random.seed(42)  (only for debugging use cases)
+#np.random.seed(42)  # (only for debugging use cases)
 
 
 
