@@ -193,6 +193,12 @@ class ParticleFilter:
 
             base_likelihood *= L_patch ** 1.6
 
+        #   2D Terrain Patch Likelihood  
+
+            """ To be added after testing with 1D version """
+         
+        
+
             
 
         # Update aux
