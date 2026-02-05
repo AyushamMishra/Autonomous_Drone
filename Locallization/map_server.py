@@ -1,4 +1,3 @@
-
 import numpy as np
 import rasterio 
 from rasterio.transform import rowcol
