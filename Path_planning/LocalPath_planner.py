@@ -40,11 +40,12 @@ class HybridAStarPlanner:
         # Bounding x,y to be within costmap bounds
         x = np.clip(x, 0, self.W - 1)
         y = np.clip(y, 0, self.H - 1)
-        # Corridor check
-        if self.corridor_mask is not None and not self.corridor_mask[y, x]:
-            return 2.0 * self.global_cost_to_goal[y, x]
-
-        return self.global_cost_to_goal[y, x]
+        
+        h = self.global_cost_to_goal[y, x]
+        if goal.yaw is not None:
+            yaw_cost = 0.1 * abs((s.yaw - goal.yaw + np.pi) % (2*np.pi) - np.pi)
+            h+=0.1*yaw_cost
+        return h
     
     # Goal Condition 
 
@@ -62,7 +63,7 @@ class HybridAStarPlanner:
     
     # Discetrized state (ensures unique states in open/closed sets)
     def discretize (self,s:State):
-        yaw_idx = int(round(s.yaw / self.yaw_res)) % self.Y
+        yaw_idx = int(round((s.yaw + np.pi) / self.yaw_res)) % self.Y
         return (
         int(round(s.x)),
         int(round(s.y)),
@@ -70,11 +71,18 @@ class HybridAStarPlanner:
     )
 
     # Local waypoint goal 
-    def select_local_goal(self, current, global_path, lookahead=20):
-        dists = [np.hypot(current.x - x, current.y - y) for x,y in global_path]
+    def select_local_goal(self, current, global_path, lookahead):
+        lookahead=int(0.5 * len(global_path))
+        dists = [np.hypot(current.x - x, current.y - y) for x, y in global_path]
         idx = np.argmin(dists)
-        idx = min(idx + lookahead, len(global_path) - 1)
-        return global_path[idx]
+
+        for k in range(idx + lookahead, idx, -1):
+            x, y = global_path[min(k, len(global_path)-1)]
+            if self.corridor_mask is None or self.corridor_mask[y, x]:
+                return (x, y)
+
+        return global_path[min(idx + lookahead, len(global_path)-1)]
+
 
     
     # Hybrid A* Search 
@@ -91,14 +99,13 @@ class HybridAStarPlanner:
         MAX_TIME = 10.0  # seconds
 
         # Setting local goal 
-        local_goal_xy = self.select_local_goal(start,global_path)
+        lookahead = int(0.5 * len(global_path)) 
+        local_goal_xy = self.select_local_goal(start, global_path, lookahead)
+
         dx = local_goal_xy[0] - start.x
         dy = local_goal_xy[1] - start.y
         goal_yaw = np.arctan2(dy, dx)
-        goal = State(local_goal_xy[0], local_goal_xy[1], goal_yaw)
-
-
-
+        goal = State(local_goal_xy[0], local_goal_xy[1], None)
 
         start.g=0.0
         start.h=self.heuristic(start,goal)
@@ -107,6 +114,12 @@ class HybridAStarPlanner:
         g_score = {}
         g_score[skey] = 0.0
         heapq.heappush(open_set, (start.f,self.counter, start))
+
+        
+
+
+
+        
 
         while open_set:
             iter+=1
@@ -126,7 +139,7 @@ class HybridAStarPlanner:
 
             # Heading alignment near goal
             pos_ok = np.hypot(current.x - goal.x, current.y - goal.y) < self.goal_tol
-            yaw_ok = abs(current.yaw - goal.yaw) < np.deg2rad(10)
+            yaw_ok = True if goal.yaw is None else abs((current.yaw - goal.yaw + np.pi) % (2*np.pi) - np.pi) < np.deg2rad(10)
 
             if pos_ok and yaw_ok:
                 return self.construct_path(current)
@@ -139,18 +152,25 @@ class HybridAStarPlanner:
 
             
             # Restricting expansion to global corridor
-            CORRIDOR_PENALTY = 5.0  # tune
+            CORRIDOR_PENALTY =  3.0  # tune
 
             inside_corridor = True
             if self.corridor_mask is not None:
                 inside_corridor = self.corridor_mask[int(current.y), int(current.x)]
 
-            
+
             # Expand using motion primitives
             successors = self.expander.expand(current)
-          
+
+            # Guard against too many successors (e.g. from bad primitives)
+            successors.sort(key=lambda s: s.g)
+            # successors = successors[:50]
+
             for nxt in successors:
-                nx, ny, nyaw = int(nxt.x), int(nxt.y), int(round(nxt.yaw / self.yaw_res)) % self.Y
+                nyaw = int(round((nxt.yaw + np.pi) / self.yaw_res)) % self.Y
+                nxt.yaw = self.yaw_angles[nyaw]
+                nx, ny = int(round(nxt.x)), int(round(nxt.y))
+
 
                 if nx < 0 or nx >= self.W or ny < 0 or ny >= self.H:
                     continue
@@ -161,20 +181,24 @@ class HybridAStarPlanner:
                 if self.corridor_mask is not None:
                     inside_corridor = self.corridor_mask[ny, nx]
 
-                penalty = 0.0 if inside_corridor else CORRIDOR_PENALTY
-                nxt.g += penalty
-                
+                if self.corridor_mask is not None and not self.corridor_mask[ny, nx]:
+                    nxt.g += 0.05 * self.global_cost_to_goal[ny, nx]
+
+                # Yaw index bounds check
+                if nyaw < 0 or nyaw >= self.Y:
+                    continue
 
                 if not np.isfinite(self.costmap[nyaw, ny, nx]):
                     continue
 
                 skey = self.discretize(nxt)
-                g_new=nxt.g
-
+                
                 # Penalizing yaw changes or steering 
                 STEER_PENALTY = 0.5         # Tune 
-                yaw_diff = abs(nxt.yaw - current.yaw)
+                yaw_diff = abs((nxt.yaw - current.yaw + np.pi) % (2*np.pi) - np.pi)
                 nxt.g += STEER_PENALTY * yaw_diff
+                
+                g_new=nxt.g
 
                 if skey in g_score and g_new >= g_score[skey]:
                     continue
@@ -190,8 +214,47 @@ class HybridAStarPlanner:
                 heapq.heappush(open_set, (nxt.f, self.counter, nxt))
         print("[planner] No path found")
         return None
+    @staticmethod
+    def receding_horizon_execute( start_state, goal_xy, global_path,
+                                    planner, exec_steps=3, goal_tol=8.0,
+                                    max_cycles=200
+                                ):
+        current = start_state
+        executed_path = [current]
+
+        for cycle in range(max_cycles):
+
+            # 1. Check global termination
+            if np.hypot(current.x - goal_xy[0], current.y - goal_xy[1]) < goal_tol:
+                print(f"[EXEC] ✅ Global goal reached in {cycle} cycles")
+                break
+
+            # 2. Plan local path
+            local_path = planner.plan(
+                current,
+                State(goal_xy[0], goal_xy[1], None),
+                global_path
+                                    )
+
+            if local_path is None or len(local_path) < 2:
+                print("[EXEC] ❌ Local planner failed")
+                break
+
+            #    3. Execute first N states
+            for s in local_path[1:exec_steps+1]:
+                current = State(s.x, s.y, s.yaw)
+                executed_path.append(current)
+
+            print(
+                f"[EXEC] cycle={cycle}, "
+                f"pos=({current.x:.1f},{current.y:.1f}), "
+                f"yaw={np.rad2deg(current.yaw):.1f}°"
+              )
+
+        return executed_path
+
     
-    
+
 # -------------------------------------------
 # Temporary Test script for locak path planner 
 # -------------------------------------------
@@ -267,6 +330,20 @@ if __name__ == "__main__":
     local_path = planner.plan(start, goal, global_path)
 
     # -------------------------
+    # Receding horizon execution loop
+    # -------------------------
+
+    executed_path = HybridAStarPlanner.receding_horizon_execute(
+                    start_state=start,
+                    goal_xy=goal_xy,
+                    global_path=global_path,
+                    planner=planner,
+                    exec_steps=5,
+                    goal_tol=8.0
+                             )
+
+
+    # -------------------------
     # Visualization
     # -------------------------
     plt.figure(figsize=(8, 8))
@@ -292,6 +369,22 @@ if __name__ == "__main__":
                 1.5*np.cos(s.yaw), 1.5*np.sin(s.yaw),
                 head_width=0.8, color="red"
             )
+
+    # Executed Trajectory 
+    if executed_path:
+        xs = [s.x for s in executed_path]
+        ys = [s.y for s in executed_path]
+        plt.plot(xs, ys, "r-", linewidth=2, label="Executed trajectory")
+
+        for s in executed_path[::8]:
+            plt.arrow(
+                s.x, s.y,
+                1.5*np.cos(s.yaw),
+                1.5*np.sin(s.yaw),
+                head_width=0.6,
+                color="red"
+                      )
+
 
     plt.scatter(*start_xy, c="green", s=100, label="Start")
     plt.scatter(*goal_xy, c="magenta", s=100, label="Goal")
