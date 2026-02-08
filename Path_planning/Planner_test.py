@@ -16,7 +16,16 @@ class PerfectHybridPlanner:
         self.costmap = costmap_3d
         self.global_path = global_path
         self.goal_tol = goal_tolerance
-        self.H, self.W, self.Y = costmap_3d.shape
+        self.H, self.Y, self.W = costmap_3d.shape
+        self.corridor = AStarGlobalPlanner.build_corridor(
+                        global_path, self.H, self.W, radius=4
+                    )
+
+
+    def global_path_distance(self, x, y):
+        gp = np.array(self.global_path)
+        return np.min(np.hypot(gp[:,0] - x, gp[:,1] - y))
+
         
     def plan(self, start_state, goal_state):
         """Simplified but robust hybrid A*"""
@@ -32,7 +41,7 @@ class PerfectHybridPlanner:
         heapq.heappush(open_set, (0.0, id(start_state), start_state))
         
         counter = 0
-        max_iter = 1000
+        max_iter = 8000
         
         while open_set and counter < max_iter:
             _, _, current = heapq.heappop(open_set)
@@ -46,9 +55,16 @@ class PerfectHybridPlanner:
             # Goal check
             if np.hypot(current.x - goal_state.x, current.y - goal_state.y) < self.goal_tol:
                 return self._reconstruct_path(current)
+
             
             # Simple motion model (3 actions: forward, left, right)
-            for action_idx, (dx, dy, dyaw) in enumerate([(1.0, 0.0, 0.0), (0.8, 0.3, 0.3), (0.8, -0.3, -0.3)]):
+            for action_idx, (dx, dy, dyaw) in enumerate([
+                                            (1.0, 0.0,  0),   # straight
+                                            (0.8, 0.3,  1),   # left
+                                            (0.8,-0.3, -1),   # right
+                                            (0.5, 0.0,  2),   # hard left
+                                            (0.5, 0.0, -2),   # hard right
+                                        ]):
                 nx = current.x + dx
                 ny = current.y + dy
                 nyaw_idx = (current.yaw_idx + int(dyaw)) % self.Y
@@ -56,9 +72,17 @@ class PerfectHybridPlanner:
                 nx_i, ny_i = int(round(nx)), int(round(ny))
                 if not (0 <= nx_i < self.W and 0 <= ny_i < self.H):
                     continue
-                
+
+                # Rejects states outide corridor
+                dist_from_start = np.hypot(current.x - start_state.x,
+                           current.y - start_state.y)
+
+                if dist_from_start > 3.0:
+                    if self.corridor[ny_i, nx_i] == 0:
+                        continue
+
                 # Cost from costmap (FIXED yaw indexing)
-                cost = self.costmap[nyaw_idx, ny_i, nx_i]
+                cost = self.costmap[ny_i, nyaw_idx, nx_i]
                 if not np.isfinite(cost):
                     continue
                 
@@ -73,7 +97,11 @@ class PerfectHybridPlanner:
                 new_state.parent = current
                 new_state.yaw_idx = nyaw_idx
                 
-                h = np.hypot(nx - goal_state.x, ny - goal_state.y)
+                h_goal = np.hypot(nx - goal_state.x, ny - goal_state.y)
+                h_path = self.global_path_distance(nx, ny)
+
+                h = h_goal + 2.0 * h_path
+
                 f = new_g + h
                 g_score[new_key] = new_g
                 heapq.heappush(open_set, (f, id(new_state), new_state))
