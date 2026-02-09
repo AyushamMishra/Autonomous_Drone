@@ -4,6 +4,7 @@ import numpy as np
 from Path_planning.state import State
 import time
 from Path_planning.GlobalPath_planner import AStarGlobalPlanner
+from Path_planning.Responsive_replanner import DStarLite
 
 
 class HybridAStarPlanner:
@@ -42,6 +43,8 @@ class HybridAStarPlanner:
         y = np.clip(y, 0, self.H - 1)
         
         h = self.global_cost_to_goal[y, x]
+        if not np.isfinite(h):
+            h = np.hypot(s.x - goal.x, s.y - goal.y)
         if goal.yaw is not None:
             yaw_cost = 0.1 * abs((s.yaw - goal.yaw + np.pi) % (2*np.pi) - np.pi)
             h+=0.1*yaw_cost
@@ -71,17 +74,16 @@ class HybridAStarPlanner:
     )
 
     # Local waypoint goal 
-    def select_local_goal(self, current, global_path, lookahead):
-        lookahead=int(0.5 * len(global_path))
+    def select_local_goal(self, current, global_path, lookahead=20.0):
         dists = [np.hypot(current.x - x, current.y - y) for x, y in global_path]
         idx = np.argmin(dists)
 
-        for k in range(idx + lookahead, idx, -1):
-            x, y = global_path[min(k, len(global_path)-1)]
-            if self.corridor_mask is None or self.corridor_mask[y, x]:
+        for k in range(idx,len(global_path)):
+            x, y = global_path[k]
+            if np.hypot(current.x - x, current.y - y) > lookahead:
                 return (x, y)
 
-        return global_path[min(idx + lookahead, len(global_path)-1)]
+        return global_path[-1]
 
 
     
@@ -90,13 +92,13 @@ class HybridAStarPlanner:
         # Returns list of State forming path from start to goal, or None if no path found
         open_set =[]
         closed =set()
-        max_iter=50000
+        max_iter=5000
         iter=0
         self.counter=0
 
         
         t0 = time.time()
-        MAX_TIME = 10.0  # seconds
+        MAX_TIME = 2.0  # seconds
 
         # Setting local goal 
         lookahead = int(0.5 * len(global_path)) 
@@ -106,7 +108,8 @@ class HybridAStarPlanner:
         dy = local_goal_xy[1] - start.y
         goal_yaw = np.arctan2(dy, dx)
         goal = State(local_goal_xy[0], local_goal_xy[1], None)
-
+        
+        start = State(start.x, start.y, start.yaw)
         start.g=0.0
         start.h=self.heuristic(start,goal)
         start.f=start.g+start.h
@@ -114,12 +117,6 @@ class HybridAStarPlanner:
         g_score = {}
         g_score[skey] = 0.0
         heapq.heappush(open_set, (start.f,self.counter, start))
-
-        
-
-
-
-        
 
         while open_set:
             iter+=1
@@ -182,7 +179,7 @@ class HybridAStarPlanner:
                     inside_corridor = self.corridor_mask[ny, nx]
 
                 if self.corridor_mask is not None and not self.corridor_mask[ny, nx]:
-                    nxt.g += 0.05 * self.global_cost_to_goal[ny, nx]
+                    nxt.g += CORRIDOR_PENALTY
 
                 # Yaw index bounds check
                 if nyaw < 0 or nyaw >= self.Y:
@@ -217,7 +214,7 @@ class HybridAStarPlanner:
     @staticmethod
     def receding_horizon_execute( start_state, goal_xy, global_path,
                                     planner, exec_steps=3, goal_tol=8.0,
-                                    max_cycles=200
+                                    max_cycles=200,dstar=None
                                 ):
         current = start_state
         executed_path = [current]
@@ -239,6 +236,36 @@ class HybridAStarPlanner:
             if local_path is None or len(local_path) < 2:
                 print("[EXEC] ❌ Local planner failed")
                 break
+            # Fake obstacle injection to verify D* (Temporary, replace with real sensor input)
+            if cycle == 5:
+                ox, oy = int(current.x + 2), int(current.y + 2)
+                planner.costmap[:, oy, ox] = np.inf
+                dstar.update_cell(ox, oy, np.inf)
+                planner.global_cost_to_goal = dstar.replan((int(current.x), int(current.y)))
+
+            """
+            long term goal: integrate D* into the loop such that if a new obstacle is detected, we update the costmap and replan globally, 
+            which will then inform the local planner in the next cycle. This way we can handle dynamic environments where obstacles may appear
+            after we've started executing the path.
+
+            updated_cells = perception.get_costmap_updates()
+
+            for (x, y, cost) in updated_cells:
+                planner.costmap[:, y, x] = cost
+                dstar.update_cell(x, y, cost)
+
+            if updated_cells:
+                planner.global_cost_to_goal = dstar.replan((int(current.x), int(current.y)))
+
+            """
+            # If new obstacle is sensed, we update thecostmap and replan
+            
+            detected_new_obstacle = False
+            if detected_new_obstacle:
+                planner.costmap[:,oy, ox] = np.inf
+                dstar.update_cell(ox, oy, np.inf)
+                planner.global_cost_to_goal = dstar.replan((int(current.x), int(current.y)))
+
 
             #    3. Execute first N states
             for s in local_path[1:exec_steps+1]:
@@ -281,7 +308,7 @@ if __name__ == "__main__":
     # -------------------------
     # Global A* (2D)
     # -------------------------
-    global_planner = AStarGlobalPlanner(costmap[0], obstacle_threshold=20.0)
+    global_planner = AStarGlobalPlanner(costmap[0], obstacle_threshold=np.inf)
     start_xy = (10, 10)
     goal_xy = (90, 90)
 
@@ -293,7 +320,10 @@ if __name__ == "__main__":
         corridor_mask[max(0,y-3):min(H,y+3), max(0,x-3):min(W,x+3)] = True
 
     # Cost-to-go heuristic
-    global_cost_to_goal = global_planner.compute_cost_to_goal(costmap[0], goal_xy, obs_th=20.0)
+    start = State(start_xy[0], start_xy[1], 0.0)
+    goal = State(goal_xy[0], goal_xy[1], 0.0)
+    dstar=DStarLite(costmap[0],goal_xy,start_xy)
+    global_cost_to_goal = dstar.replan((int(start.x), int(start.y)))
 
     # -------------------------
     # Dummy motion primitive expander
@@ -328,6 +358,8 @@ if __name__ == "__main__":
     goal = State(goal_xy[0], goal_xy[1], 0.0)
 
     local_path = planner.plan(start, goal, global_path)
+    planner.global_cost_to_goal = global_cost_to_goal
+
 
     # -------------------------
     # Receding horizon execution loop
@@ -339,7 +371,7 @@ if __name__ == "__main__":
                     global_path=global_path,
                     planner=planner,
                     exec_steps=5,
-                    goal_tol=8.0
+                    goal_tol=8.0,dstar=dstar
                              )
 
 
