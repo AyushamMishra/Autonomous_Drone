@@ -1,3 +1,4 @@
+# D* Lite implementation for responsive path replanning in dynamic environments.
 import numpy as np
 import heapq
 from Path_planning.motion_primitives import MotionPrimitives
