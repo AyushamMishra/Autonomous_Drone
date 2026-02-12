@@ -92,7 +92,7 @@ class HybridAStarPlanner:
         # Returns list of State forming path from start to goal, or None if no path found
         open_set =[]
         closed =set()
-        max_iter=5000
+        max_iter=8000
         iter=0
         self.counter=0
 
