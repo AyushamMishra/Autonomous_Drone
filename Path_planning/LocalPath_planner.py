@@ -322,8 +322,10 @@ if __name__ == "__main__":
     # Cost-to-go heuristic
     start = State(start_xy[0], start_xy[1], 0.0)
     goal = State(goal_xy[0], goal_xy[1], 0.0)
-    dstar=DStarLite(costmap[0],goal_xy,start_xy)
-    global_cost_to_goal = dstar.replan((int(start.x), int(start.y)))
+    dstar = DStarLite()
+    dstar.initialize(costmap[0], start_xy, goal_xy)
+
+    global_cost_to_goal = dstar.compute_shortest_path()
 
     # -------------------------
     # Dummy motion primitive expander
