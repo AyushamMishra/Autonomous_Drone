@@ -2,16 +2,14 @@ from Path_planning.state import State
 
 class StateExpander:
     def __init__(self, motion_primitives, transition_model):
-        self.primitives = motion_primitives
+        self.motion_primitives = motion_primitives
         self.tm = transition_model
 
     def expand(self, state: State):
-        """
-        Returns a list of successor State objects
-        """
         successors = []
 
-        for primitive in self.primitives.primitives():
+        for primitive in self.motion_primitives.primitives():
+
             result = self.tm.propagate(state, primitive)
 
             if result is None:
