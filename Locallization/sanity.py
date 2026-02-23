@@ -10,7 +10,7 @@ import numpy as np
 with rasterio.open("D:\Autonomous_Drone\Search_map\cdnh43w\cdnh43w_utm.tif") as ds:
     print(ds.crs)
     print(ds.transform)
-    print(ds.bounds)
+    print(ds.bounds) 
     x_test = (ds.bounds.left + ds.bounds.right) / 2
     y_test = (ds.bounds.bottom + ds.bounds.top) / 2
 """
